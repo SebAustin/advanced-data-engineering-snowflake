@@ -22,11 +22,9 @@ jobs:
 
     env:
       # Named connection: advanced_data_engineering_snowflake (see config.toml)
-      # Store these values as GitHub repository secrets (Settings → Secrets → Actions)
       SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
       SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
       SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_AUTHENTICATOR: SNOWFLAKE_JWT
-      SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_PRIVATE_KEY_RAW: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_RAW }}
       SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
       SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
       SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_DATABASE: COURSE_REPO
@@ -63,6 +61,29 @@ jobs:
         with:
           cli-version: "latest"
           default-config-file-path: "config.toml"
+
+      - name: Configure Snowflake private key
+        env:
+          SNOWFLAKE_PRIVATE_KEY_B64: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_B64 }}
+        run: |
+          KEY_PATH="${RUNNER_TEMP}/snowflake_rsa_key.p8"
+
+          if [[ -z "$SNOWFLAKE_PRIVATE_KEY_B64" ]]; then
+            echo "Missing secret SNOWFLAKE_PRIVATE_KEY_B64."
+            echo "Create it with: base64 -i ~/.snowflake/keys/rsa_key.p8 | tr -d '\\n' | pbcopy"
+            exit 1
+          fi
+
+          echo "$SNOWFLAKE_PRIVATE_KEY_B64" | base64 -d > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+
+          if ! openssl pkey -in "$KEY_PATH" -noout >/dev/null 2>&1; then
+            echo "Invalid PEM after base64 decode (MalformedFraming)."
+            echo "Re-create SNOWFLAKE_PRIVATE_KEY_B64 from your rsa_key.p8 file."
+            exit 1
+          fi
+
+          echo "SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_PRIVATE_KEY_FILE=$KEY_PATH" >> "$GITHUB_ENV"
 
       - name: Verify Snowflake connection
         run: snow connection test
