@@ -29,8 +29,6 @@ jobs:
       SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
       SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_DATABASE: COURSE_REPO
       SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_SCHEMA: PUBLIC
-      # Only required if your private key is passphrase-protected
-      PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
 
     steps:
       - name: Checkout repository
@@ -65,16 +63,18 @@ jobs:
       - name: Configure Snowflake private key
         env:
           SNOWFLAKE_PRIVATE_KEY_B64: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_B64 }}
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
         run: |
           KEY_PATH="${RUNNER_TEMP}/snowflake_rsa_key.p8"
+          KEY_B64="$(printf '%s' "$SNOWFLAKE_PRIVATE_KEY_B64" | tr -d '[:space:]')"
 
-          if [[ -z "$SNOWFLAKE_PRIVATE_KEY_B64" ]]; then
+          if [[ -z "$KEY_B64" ]]; then
             echo "Missing secret SNOWFLAKE_PRIVATE_KEY_B64."
             echo "Create it with: base64 -i ~/.snowflake/keys/rsa_key.p8 | tr -d '\\n' | pbcopy"
             exit 1
           fi
 
-          echo "$SNOWFLAKE_PRIVATE_KEY_B64" | base64 -d > "$KEY_PATH"
+          printf '%s' "$KEY_B64" | base64 -d > "$KEY_PATH"
           chmod 600 "$KEY_PATH"
 
           if ! openssl pkey -in "$KEY_PATH" -noout >/dev/null 2>&1; then
@@ -83,10 +83,23 @@ jobs:
             exit 1
           fi
 
+          KEY_FP="$(openssl pkey -in "$KEY_PATH" -pubout -outform DER | openssl dgst -sha256 -binary | openssl enc -base64)"
+          echo "Decoded key fingerprint: SHA256:${KEY_FP}="
+          echo "Snowflake user fingerprint should match DESCRIBE USER <user> -> RSA_PUBLIC_KEY_FP"
+
+          if [[ -n "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE" ]]; then
+            echo "PRIVATE_KEY_PASSPHRASE is set (encrypted key)."
+            echo "PRIVATE_KEY_PASSPHRASE=$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE" >> "$GITHUB_ENV"
+          fi
+
           echo "SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_PRIVATE_KEY_FILE=$KEY_PATH" >> "$GITHUB_ENV"
 
       - name: Verify Snowflake connection
-        run: snow connection test
+        run: |
+          echo "Using account: ${SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_ACCOUNT}"
+          echo "Using user: ${SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_USER}"
+          echo "Account must be UTHZAZW-FJ87774 (not the FD17944 locator alone)."
+          snow connection test
 
       - name: Fetch latest changes to Snowflake
         run: snow git fetch COURSE_REPO.PUBLIC.ADVANCED_DATA_ENGINEERING_SNOWFLAKE
