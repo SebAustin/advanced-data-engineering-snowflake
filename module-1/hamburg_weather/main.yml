@@ -20,16 +20,6 @@ jobs:
     if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
 
-    env:
-      # Named connection: advanced_data_engineering_snowflake (see config.toml)
-      SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
-      SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
-      SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_AUTHENTICATOR: SNOWFLAKE_JWT
-      SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
-      SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
-      SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_DATABASE: COURSE_REPO
-      SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_SCHEMA: PUBLIC
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -60,17 +50,40 @@ jobs:
           cli-version: "latest"
           default-config-file-path: "config.toml"
 
-      - name: Configure Snowflake private key
+      - name: Configure Snowflake connection
         env:
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SNOWFLAKE_WAREHOUSE }}
+          SNOWFLAKE_ROLE: ${{ secrets.SNOWFLAKE_ROLE }}
           SNOWFLAKE_PRIVATE_KEY_B64: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_B64 }}
           SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ${{ secrets.SNOWFLAKE_PRIVATE_KEY_PASSPHRASE }}
         run: |
-          KEY_PATH="${RUNNER_TEMP}/snowflake_rsa_key.p8"
-          KEY_B64="$(printf '%s' "$SNOWFLAKE_PRIVATE_KEY_B64" | tr -d '[:space:]')"
+          trim() { printf '%s' "$1" | tr -d '[:space:]'; }
 
-          if [[ -z "$KEY_B64" ]]; then
-            echo "Missing secret SNOWFLAKE_PRIVATE_KEY_B64."
-            echo "Create it with: base64 -i ~/.snowflake/keys/rsa_key.p8 | tr -d '\\n' | pbcopy"
+          ACCOUNT="$(trim "$SNOWFLAKE_ACCOUNT")"
+          USER="$(trim "$SNOWFLAKE_USER")"
+          WAREHOUSE="$(trim "$SNOWFLAKE_WAREHOUSE")"
+          ROLE="$(trim "$SNOWFLAKE_ROLE")"
+          KEY_B64="$(trim "$SNOWFLAKE_PRIVATE_KEY_B64")"
+          KEY_PATH="${RUNNER_TEMP}/snowflake_rsa_key.p8"
+
+          if [[ -z "$ACCOUNT" || -z "$USER" || -z "$WAREHOUSE" || -z "$ROLE" || -z "$KEY_B64" ]]; then
+            echo "Missing one or more required secrets."
+            echo "Required: SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_WAREHOUSE, SNOWFLAKE_ROLE, SNOWFLAKE_PRIVATE_KEY_B64"
+            exit 1
+          fi
+
+          # JWT auth requires the account identifier (e.g. ORG-ACCOUNT), not the locator alone.
+          if [[ "$ACCOUNT" == "FD17944" ]]; then
+            echo "SNOWFLAKE_ACCOUNT is set to locator FD17944."
+            echo "Use the full account identifier instead, e.g. UTHZAZW-FJ87774"
+            exit 1
+          fi
+
+          if [[ "$ACCOUNT" != *"-"* ]]; then
+            echo "SNOWFLAKE_ACCOUNT should be the full account identifier (contains a hyphen)."
+            echo "Example: UTHZAZW-FJ87774"
             exit 1
           fi
 
@@ -78,28 +91,41 @@ jobs:
           chmod 600 "$KEY_PATH"
 
           if ! openssl pkey -in "$KEY_PATH" -noout >/dev/null 2>&1; then
-            echo "Invalid PEM after base64 decode (MalformedFraming)."
-            echo "Re-create SNOWFLAKE_PRIVATE_KEY_B64 from your rsa_key.p8 file."
+            echo "Invalid PEM after base64 decode."
+            echo "Re-create SNOWFLAKE_PRIVATE_KEY_B64 with:"
+            echo "base64 -i ~/.snowflake/keys/rsa_key.p8 | tr -d '\\n' | pbcopy"
             exit 1
           fi
 
           KEY_FP="$(openssl pkey -in "$KEY_PATH" -pubout -outform DER | openssl dgst -sha256 -binary | openssl enc -base64)"
           echo "Decoded key fingerprint: SHA256:${KEY_FP}="
-          echo "Snowflake user fingerprint should match DESCRIBE USER <user> -> RSA_PUBLIC_KEY_FP"
+          echo "Expected fingerprint:      SHA256:cLN7wwfsL1rWFglmlXVjNtHAp1xpleISJzHFpq0gEsM="
 
-          if [[ -n "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE" ]]; then
-            echo "PRIVATE_KEY_PASSPHRASE is set (encrypted key)."
-            echo "PRIVATE_KEY_PASSPHRASE=$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE" >> "$GITHUB_ENV"
+          if [[ "$KEY_FP" != "cLN7wwfsL1rWFglmlXVjNtHAp1xpleISJzHFpq0gEsM=" ]]; then
+            echo "Private key fingerprint does not match the public key on user SEBAUSTIN512."
+            echo "Re-create SNOWFLAKE_PRIVATE_KEY_B64 from ~/.snowflake/keys/rsa_key.p8"
+            exit 1
           fi
 
+          echo "SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_ACCOUNT=$ACCOUNT" >> "$GITHUB_ENV"
+          echo "SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_USER=$USER" >> "$GITHUB_ENV"
+          echo "SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_AUTHENTICATOR=SNOWFLAKE_JWT" >> "$GITHUB_ENV"
+          echo "SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_WAREHOUSE=$WAREHOUSE" >> "$GITHUB_ENV"
+          echo "SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_ROLE=$ROLE" >> "$GITHUB_ENV"
+          echo "SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_DATABASE=COURSE_REPO" >> "$GITHUB_ENV"
+          echo "SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_SCHEMA=PUBLIC" >> "$GITHUB_ENV"
           echo "SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_PRIVATE_KEY_FILE=$KEY_PATH" >> "$GITHUB_ENV"
 
+          PASSPHRASE="$(trim "$SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")"
+          if [[ -n "$PASSPHRASE" ]]; then
+            echo "PRIVATE_KEY_PASSPHRASE=$PASSPHRASE" >> "$GITHUB_ENV"
+          fi
+
+          echo "Account length: ${#ACCOUNT} (expected 17 for UTHZAZW-FJ87774)"
+          echo "User length: ${#USER} (expected 12 for SEBAUSTIN512)"
+
       - name: Verify Snowflake connection
-        run: |
-          echo "Using account: ${SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_ACCOUNT}"
-          echo "Using user: ${SNOWFLAKE_CONNECTIONS_ADVANCED_DATA_ENGINEERING_SNOWFLAKE_USER}"
-          echo "Account must be UTHZAZW-FJ87774 (not the FD17944 locator alone)."
-          snow connection test
+        run: snow connection test
 
       - name: Fetch latest changes to Snowflake
         run: snow git fetch COURSE_REPO.PUBLIC.ADVANCED_DATA_ENGINEERING_SNOWFLAKE
